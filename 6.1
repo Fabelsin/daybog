@@ -1,0 +1,87 @@
+За допомогою власної політики SELinux дозволити службі anonymouse
+FTP в активному режимі працювати на портах 80 та 23 відповідно.
+
+Етап 0: Підготовка та вирішення проблеми "Disabled SELinux" 
+Ми зіткнулися з тим, що SELinux був вимкнений (Disabled). Без нього виконання завдання неможливе. Цей етап вмикає захист. 
+	•	Вхід та встановлення ПЗ: 
+su - 
+# Встановлюємо FTP-сервер, інструменти аудиту та базові політики SELinux 
+# auditd : демон аудиту (записує логи помилок, потрібен для audit2allow) 
+# policycoreutils-python-utils : містить утиліту audit2allow apt update apt install vsftpd auditd selinux-basics selinux-policy-default policycoreutils-python-utils -y 
+	•	Активація SELinux: 
+# Ця команда додає параметри в завантажувач Linux, щоб ядро запустило захист selinux-activate 
+	•	Перезавантаження (Обов'язково): 
+reboot 
+Примітка: Під час перезавантаження можливий виліт VirtualBox з помилкою пам'яті. Це нормально для віртуального середовища при зміні параметрів ядра. Просто запустіть машину знову. 
+
+Проблема: У Debian (server version) відсутній користувач графічного інтерфейсу sddm, але налаштування SELinux на нього посилаються. Це викликає паніку системи. Рішення: Створити технічного користувача-заглушку.
+# Створюємо користувача sddm, щоб виправити помилку "user sddm not in password file" # -r: створити як системного (без домашньої папки)  # -s /bin/false: заборонити вхід (для безпеки)   useradd -r -s /bin/false sddm
+ 
+Етап 1: Перевірка режиму (Enforcing) 
+Після запуску переконуємося, що "поліцейський" працює. 
+su - getenforce 
+	•	Очікуємо: Enforcing (Блокування увімкнено). 
+	•	Якщо бачимо Permissive: вводимо setenforce 1. 
+ 
+Етап 2: Налаштування Port 80 та Анонімного доступу 
+Тут ми вмикаємо анонімний вхід і міняємо порт. Також вирішуємо проблему "тихої помилки". 
+ 
+ 
+ 
+	•	Редагування конфігурації: 
+nano /etc/vsftpd.conf 
+Вносимо зміни: 
+	•	anonymous_enable=YES (Увімкнути анонімний вхід — вимога завдання!) 
+	•	listen=YES (Слухати IPv4) 
+	•	listen_ipv6=NO (Вимкнути IPv6, щоб не конфліктувало) 
+	•	listen_port=80 (Додати в кінець файлу: слухати порт 80) (Зберегти: Ctrl+O -> Enter -> Ctrl+X) 
+	•	Спроба запуску та діагностика: 
+systemctl restart vsftpd 
+Проблема: Команда може не видати помилку в термінал, хоча служба не запустилася. Рішення: Завжди перевіряємо статус вручну. 
+systemctl status vsftpd 
+	•	Очікуємо: Червоний статус failed. Це означає, що SELinux заблокував порт 80. 
+	•	Створення політики (Дозволу): 
+# grep: шукає слово "vsftpd" у логах аудиту (/var/log/audit/audit.log) # audit2allow -M: створює модуль політики (.pp) на основі знайденого grep vsftpd /var/log/audit/audit.log | audit2allow -M my_ftp_80 
+ 
+# Встановлення створеного модуля semodule -i my_ftp_80.pp 
+	•	Успішний запуск: systemctl restart vsftpd systemctl status vsftpd 
+(Тепер має бути зеленим active). 
+ 
+ 
+ 
+ 
+ 
+ 
+Етап 3: Налаштування Port 23 (Telnet) 
+Повторюємо процедуру, бо дозвіл на порт 80 не дає права на порт 23. 
+	•	Зміна порту: 
+nano /etc/vsftpd.conf 
+	• 	Змінюємо listen_port=80 на listen_port=23. 
+	•	Ловимо помилку: systemctl restart vsftpd 
+# Знову перевіряємо статус, якщо помилки немає на екрані systemctl status vsftpd 
+	•	Створення політики для порту 23: 
+# Називаємо новий модуль інакше (my_ftp_23), щоб не перезаписати старий grep vsftpd /var/log/audit/audit.log | audit2allow -M my_ftp_23 semodule -i my_ftp_23.pp 
+	•	Успішний запуск: 
+systemctl restart vsftpd 
+ 
+Етап 4: Активний режим (Active Mode) 
+SELinux блокує спроби сервера самому підключатися до клієнтів (активний режим). Це не помилка в логах, а налаштування перемикача. 
+# -P (Permanent): зберегти налаштування назавжди 
+# ftpd_connect_all_unreserved: дозволити FTP підключатися до всіх портів setsebool -P ftpd_connect_all_unreserved 1 
+ 
+Етап 5: Фінальна перевірка (Verification) 
+Остаточний чек-лист для здачі роботи. 
+	•	Чи працює служба? 
+systemctl is-active vsftpd 
+# Має бути: active 
+ 
+ 
+ 
+	•	Чи працює захист? 
+getenforce 
+# Має бути: Enforcing 
+	•	Чи дозволено активний режим? getsebool ftpd_connect_all_unreserved 
+# Має бути: --> on 
+	•	Чи увімкнено анонімний доступ? grep "anonymous_enable" /etc/vsftpd.conf 
+# Має бути: YES 
+ 
