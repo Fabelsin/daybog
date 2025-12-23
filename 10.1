@@ -1,0 +1,89 @@
+За допомогою командного рядка PowerShell та групових політик
+встановіть політику паролів згідно зі стандартом PCI DSS 1.2 таким
+чином, щоб користувачі Active Directory на клієнтських комп’ютерах
+були обмежені цією політикою.
+
+1. Початкові умови
+Встановлена Windows Server 2008
+Вхід виконано під локальним Administrator
+Сервер не є членом домену (чиста система)
+2. Налаштування мережі (статична IP)
+Start → Control Panel → Network and Sharing Center
+Manage network connections
+Local Area Connection → Properties
+Internet Protocol Version 4 (IPv4) → Properties
+Встановити: - IP address: 192.168.1.10 - Subnet mask: 255.255.255.0 - Default gateway:
+192.168.1.1 - Preferred DNS server: 192.168.1.10
+Натиснути OK.
+3. Встановлення ролі Active Directory Domain Services
+Start → Administrative Tools → Server Manager
+Roles → Add Roles
+Обрати Active Directory Domain Services
+Next → Install
+Після завершення сервер не перезавантажувати.
+4. Створення домену (dcpromo)
+1)Start → Run → ввести:
+dcpromo
+2)Next
+3)Create a new domain in a new forest
+4)Domain name: corp.local
+5)Forest functional level: Windows Server 2008
+6)Domain functional level: Windows Server 2008
+7)DNS Server → Install DNS
+8)Попередження про DNS delegation → Yes
+9)NetBIOS name → за замовчуванням
+10)Directory Services Restore Mode password → задати пароль
+11)Finish → Reboot
+5. Відкриття Group Policy Management
+Увійти вже як corp\Administrator
+Start → Administrative Tools → Group Policy Management
+6. Правильний шлях до редагування Default Domain Policy
+У лівому дереві:
+Forest
+ └── Domains
+ └── corp.local
+ └── Group Policy Objects
+ └── Default Domain Policy
+Редагування робиться ТІЛЬКИ звідси.
+Правий клік на Default Domain Policy → Edit.
+7. Налаштування Password Policy (PCI DSS 1.2)
+Шлях:
+Computer Configuration
+ └── Windows Settings
+ └── Security Settings
+ └── Account Policies
+ └── Password Policy
+ Встановити значення:
+Enforce password history: 4
+Maximum password age: 90 days
+Minimum password age: 1 day
+Minimum password length: 7
+Password must meet complexity requirements: Enabled
+8. Налаштування Account Lockout Policy
+Шлях:
+Account Policies
+ └── Account Lockout Policy
+Встановити: - Account lockout threshold: 6 (погодитися з автоматичними значеннями) - Account
+lockout duration: 30 minutes - Reset account lockout counter after: 30 minutes
+9. Примусове оновлення групових політик
+На сервері:
+gpupdate /force
+10. Перевірка політики на сервері
+Команда:
+net accounts
+Очікувано: - Minimum password lengt
+11. Клієнтський комп’ютер
+Windows 7 / 10
+Ввести комп’ютер у домен corp.local
+Увійти під доменним користувачем
+Оновити політики:
+gpupdate /force
+12. Перевірка на клієнті
+gpresult /r
+або
+rsop.msc
+Переконатися, що застосована Default Domain Policy.
+13. Висновок
+Політика паролів відповідно до стандарту PCI DSS 1.2 була налаштована у домені Active Directory
+Windows Server 2008 за допомогою Group Policy. Політика застосовується до всіх користувачів
+домену та обмежує їх на клієнтських комп’ютерах.
