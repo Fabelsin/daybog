@@ -1,0 +1,474 @@
+Встановити Apache2 з базовими налаштуваннями безпеки та логування,
+налаштувати https для двохдоменної системи (два сайти).
+
+
+0.Підготовка: DNS/hosts (щоб домени відкривались)
+
+Перевір IP:
+
+ip a
+
+Відкрий Notepad від адміна → файл:
+C:\Windows\System32\drivers\etc\hosts
+
+192.168.193.132   site1.local (192.168.193.132)-ip вашої машини  
+
+192.168.193.132   site2.local (192.168.193.132)-ip вашої машини  
+
+Тепер відкриваємо
+
+sudo nano /etc/hosts
+
+І в кінець файлу додай
+
+192.168.193.132   site1.local site2.local
+
+ 
+
+1) Встановлення Apache2 + корисні пакети
+
+sudo apt update
+
+sudo apt -y install apache2 openssl ufw
+
+Перевір статус:
+
+systemctl status apache2 --no-pager
+
+2) Базові модулі Apache (безпека + SSL + headers)
+
+Увімкнути потрібні модулі:
+
+sudo a2enmod ssl headers rewrite http2
+
+(Опційно, але корисно) socache_shmcb для TLS session cache:
+
+sudo a2enmod socache_shmcb
+
+Перезапуск:
+
+sudo systemctl restart apache2
+
+3) Firewall (UFW) — відкрити тільки потрібне
+
+Подивись профілі:
+
+sudo ufw app list
+
+Дозволь OpenSSH (щоб не відрізати себе) і Apache Full (80/443):
+
+sudo ufw allow OpenSSH
+
+sudo ufw allow "Apache Full"
+
+sudo ufw enable
+
+sudo ufw status verbose
+
+4) Структура сайтів (2 сайти)
+
+Створимо каталоги:
+
+sudo mkdir -p /var/www/site1/public_html
+
+sudo mkdir -p /var/www/site2/public_html
+
+Власник/права (простий варіант під Apache):
+
+sudo chown -R www-data:www-data /var/www/site1 /var/www/site2
+
+sudo find /var/www/site1 /var/www/site2 -type d -exec chmod 755 {} \;
+
+sudo find /var/www/site1 /var/www/site2 -type f -exec chmod 644 {} \;
+
+Стартові сторінки:
+
+echo "<h1>site1.local OK</h1>" | sudo tee /var/www/site1/public_html/index.html
+
+echo "<h1>site2.local OK</h1>" | sudo tee /var/www/site2/public_html/index.html
+
+ 
+
+5) Логування (окремі access/error логи на кожен сайт)
+
+Створимо папку під логи:
+
+sudo mkdir -p /var/log/apache2/vhosts
+
+sudo chown -R root:adm /var/log/apache2
+
+sudo chmod -R 750 /var/log/apache2/vhosts
+
+6) Сертифікати HTTPS (self-signed на кожен домен)
+
+Створимо папку:
+
+sudo mkdir -p /etc/ssl/localcerts
+
+sudo chmod 700 /etc/ssl/localcerts
+
+ 
+
+Сертифікат для site1.local
+
+sudo openssl req -x509 -nodes -newkey rsa:2048 -days 365 \
+
+ -keyout /etc/ssl/localcerts/site1.local.key \
+
+ -out /etc/ssl/localcerts/site1.local.crt \
+
+ -subj "/C=UA/ST=Kyiv/L=Kyiv/O=Lab/OU=Web/CN=site1.local"
+
+ 
+
+ 
+
+Сертифікат для site2.local
+
+sudo openssl req -x509 -nodes -newkey rsa:2048 -days 365 \
+
+ -keyout /etc/ssl/localcerts/site2.local.key \
+
+ -out /etc/ssl/localcerts/site2.local.crt \
+
+ -subj "/C=UA/ST=Kyiv/L=Kyiv/O=Lab/OU=Web/CN=site2.local"
+
+ 
+
+Права на ключі:
+
+sudo sh -c 'chmod 600 /etc/ssl/localcerts/*.key'
+
+sudo sh -c 'chmod 644 /etc/ssl/localcerts/*.crt'
+
+Перевір
+
+sudo ls -l /etc/ssl/localcerts
+
+Має бути
+
+-rw------- 1 root root site1.local.key
+
+-rw-r--r-- 1 root root site1.local.crt
+
+-rw------- 1 root root site2.local.key
+
+-rw-r--r-- 1 root root site2.local.crt
+
+ 
+
+7) Базовий TLS hardening (спільний конфіг)
+
+Створи файл:
+
+sudo nano /etc/apache2/conf-available/ssl-hardening.conf
+
+Встав:
+
+# Мінімальні базові налаштування TLS
+
+SSLProtocol             all -SSLv3 -TLSv1 -TLSv1.1
+
+SSLCipherSuite          HIGH:!aNULL:!MD5:!3DES
+
+SSLHonorCipherOrder     on
+
+ 
+
+# Session cache (корисно для продуктивності)
+
+SSLSessionCache         shmcb:/var/run/apache2/ssl_scache(512000)
+
+SSLSessionCacheTimeout  300
+
+ 
+
+# OCSP stapling (може не мати сенсу для self-signed, але не заважає)
+
+SSLUseStapling          on
+
+SSLStaplingCache        shmcb:/var/run/apache2/stapling_cache(128000)
+
+ 
+
+Увімкни конфіг:
+
+sudo a2enconf ssl-hardening
+
+sudo systemctl reload apache2
+
+ 
+
+8) Security headers (база)
+
+Створи файл:
+
+sudo nano /etc/apache2/conf-available/security-headers.conf
+
+Встав:
+
+ServerTokens Prod
+
+ServerSignature Off
+
+TraceEnable Off
+
+ 
+
+Header always set X-Content-Type-Options "nosniff"
+
+Header always set X-Frame-Options "SAMEORIGIN"
+
+Header always set Referrer-Policy "strict-origin-when-cross-origin"
+
+Header always set Permissions-Policy "geolocation=(), microphone=(), camera=()"
+
+ 
+
+# HSTS вмикай тільки якщо 100% впевнений, що HTTPS завжди буде доступний
+
+# Header always set Strict-Transport-Security "max-age=31536000; includeSubDomain
+
+ 
+
+Увімкни:
+
+sudo a2enconf security-headers
+
+sudo systemctl reload apache2
+
+ 
+
+ 
+
+ 
+
+9) Налаштування 2-х сайтів: VirtualHosts для 80 і 443
+
+9.1 Створити конфіг site1
+
+sudo nano /etc/apache2/sites-available/site1.local.conf
+
+Встав:
+
+<VirtualHost *:80>
+
+   ServerName site1.local
+
+   DocumentRoot /var/www/site1/public_html
+
+ 
+
+   ErrorLog  /var/log/apache2/vhosts/site1_error.log
+
+   CustomLog /var/log/apache2/vhosts/site1_access.log combined
+
+ 
+
+   # Редірект на HTTPS
+
+   RewriteEngine On
+
+   RewriteRule ^ https://%{SERVER_NAME}%{REQUEST_URI} [END,NE,R=permanent]
+
+</VirtualHost>
+
+ 
+
+<VirtualHost *:443>
+
+   ServerName site1.local
+
+   DocumentRoot /var/www/site1/public_html
+
+ 
+
+   ErrorLog  /var/log/apache2/vhosts/site1_ssl_error.log
+
+   CustomLog /var/log/apache2/vhosts/site1_ssl_access.log combined
+
+ 
+
+   SSLEngine on
+
+   SSLCertificateFile      /etc/ssl/localcerts/site1.local.crt
+
+   SSLCertificateKeyFile   /etc/ssl/localcerts/site1.local.key
+
+ 
+
+   <Directory /var/www/site1/public_html>
+
+       Options -Indexes +FollowSymLinks
+
+       AllowOverride All
+
+       Require all granted
+
+   </Directory>
+
+</VirtualHost>
+
+ 
+
+9.2 Створити конфіг site2
+
+sudo nano /etc/apache2/sites-available/site2.local.conf
+
+Встав:
+
+<VirtualHost *:80>
+
+   ServerName site2.local
+
+   DocumentRoot /var/www/site2/public_html
+
+ 
+
+   ErrorLog  /var/log/apache2/vhosts/site2_error.log
+
+   CustomLog /var/log/apache2/vhosts/site2_access.log combined
+
+ 
+
+   RewriteEngine On
+
+   RewriteRule ^ https://%{SERVER_NAME}%{REQUEST_URI} [END,NE,R=permanent]
+
+</VirtualHost>
+
+ 
+
+<VirtualHost *:443>
+
+   ServerName site2.local
+
+   DocumentRoot /var/www/site2/public_html
+
+ 
+
+   ErrorLog  /var/log/apache2/vhosts/site2_ssl_error.log
+
+   CustomLog /var/log/apache2/vhosts/site2_ssl_access.log combined
+
+ 
+
+   SSLEngine on
+
+   SSLCertificateFile      /etc/ssl/localcerts/site2.local.crt
+
+   SSLCertificateKeyFile   /etc/ssl/localcerts/site2.local.key
+
+ 
+
+   <Directory /var/www/site2/public_html>
+
+       Options -Indexes +FollowSymLinks
+
+       AllowOverride All
+
+       Require all granted
+
+   </Directory>
+
+</VirtualHost>
+
+ 
+
+10) Увімкнути сайти, вимкнути дефолтні
+
+sudo a2dissite 000-default.conf
+
+sudo a2ensite site1.local.conf
+
+sudo a2ensite site2.local.conf
+
+ 
+
+Перевір конфіг:
+
+sudo apache2ctl configtest
+
+Якщо Syntax OK, перезавантаж:
+
+sudo systemctl reload apache2
+
+ 
+
+11) Перевірка (сервер і клієнт)
+
+На сервері
+
+Подивитись, що слухає 80/443:
+
+sudo ss -tulpn | grep -E ':(80|443)\s'
+
+ 
+
+На клієнті (браузер)
+
+• https://site1.local
+• https://site2.local
+Для self-signed буде попередження. Це нормально для лабораторної.
+Якщо треба “без попереджень” — треба або корпоративний CA, або Let’s Encrypt на публічний домен.
+
+ 
+
+ 
+
+ 
+
+ 
+
+12) Логи та ротація
+
+Логи вже пишуться у:
+
+ls -l /var/log/apache2/vhosts/
+
+​
+
+Ротація в Ubuntu вже є через logrotate для /var/log/apache2/*.log.
+
+
+Щоб точно включити нашу підпапку vhosts, перевір:
+
+cat /etc/logrotate.d/apache2
+
+Якщо там немає vhosts/*.log, можна додати. Швидкий варіант — створити окремий файл:
+
+sudo nano /etc/logrotate.d/apache2-vhosts
+
+Встав повністю:
+
+/var/log/apache2/vhosts/*.log {
+
+   daily
+
+   rotate 14
+
+   compress
+
+   delaycompress
+
+   missingok
+
+   notifempty
+
+   create 640 root adm
+
+   sharedscripts
+
+   postrotate
+
+       systemctl reload apache2 > /dev/null 2>&1 || true
+
+   endscript
+
+}
+
+ 
+
+Перевір “вхолосту”:
+
+sudo logrotate -d /etc/logrotate.d/apache2-vhosts
