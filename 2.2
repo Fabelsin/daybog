@@ -1,0 +1,296 @@
+Встановити Bind9 з базовими налаштуваннями безпеки (включаючи ACL)
+та налаштувати DNSSEC.
+
+1. Встановлення BIND9
+
+1.1 Оновити систему
+
+sudo apt update
+
+sudo apt upgrade -y
+
+ 
+
+1.2 Встановити BIND9 та утиліти
+
+sudo apt install bind9 bind9utils bind9-dnsutils -y
+
+ 
+
+1.3 Перевірити, що служба працює
+
+systemctl status bind9
+
+2. Базові налаштування безпеки (named.conf.options)
+Відкриваємо конфіг:
+sudo nano /etc/bind/named.conf.options
+
+Повністю заміни вміст на це
+
+options {
+
+   directory "/var/cache/bind";
+
+   recursion yes;
+
+   allow-recursion { trusted; };
+
+   allow-query { trusted; };
+
+   allow-transfer { none; };
+
+   dnssec-validation auto;
+
+   auth-nxdomain no;
+
+   listen-on { any; };
+
+   listen-on-v6 { none; };
+
+};
+
+acl trusted {
+
+   127.0.0.1;
+
+   192.168.193.0/24;
+
+   192.168.195.0/24;
+
+};
+
+ 
+
+Що тут важливо (коротко):
+
+• acl trusted → хто має право питати DNS
+• allow-transfer none → заборона zone transfer
+• dnssec-validation auto → перевірка DNSSEC
+• recursion yes → кешуючий DNS тільки для своїх
+ 
+
+3. Створення зони DNS
+
+3.1 Додати зону в named.conf.local
+
+sudo nano /etc/bind/named.conf.local
+
+Додай:
+
+zone "example.local" {
+
+   type master;
+
+   file "/etc/bind/db.example.local";
+
+   allow-update { none; };
+
+};
+
+ 
+
+3.2 Створити файл зони
+
+Скопіювати шаблон:
+
+sudo cp /etc/bind/db.local /etc/bind/db.example.local
+
+Відкрити:
+
+sudo nano /etc/bind/db.example.local
+
+
+
+ 
+
+4️. Перевірка конфігурації
+
+sudo named-checkconf
+
+Перевірка зони:
+
+sudo named-checkzone example.local /etc/bind/db.example.local
+
+ 
+
+5️. Перезапуск BIND9
+
+sudo systemctl restart bind9
+
+ 
+
+Перевір:
+
+systemctl status bind9
+
+ 
+
+6️. Увімкнення DNSSEC (підпис зони)
+
+6.1 Створити каталог для ключів
+
+sudo mkdir /etc/bind/keys
+
+cd /etc/bind/keys
+
+ 
+
+ 
+
+6.2 Створення ZSK (Zone Signing Key)
+
+sudo dnssec-keygen -a RSASHA256 -b 2048 -n ZONE example.local
+
+ 
+
+6.3 Створення KSK (Key Signing Key)
+
+sudo dnssec-keygen -a RSASHA256 -b 4096 -n ZONE -f KSK example.local
+
+ 
+
+Перевір:
+
+ls
+
+Має бути:
+
+Kexample.local.+008+XXXXX.key
+
+Kexample.local.+008+XXXXX.private
+
+ 
+
+7️. Підписання DNS-зони
+
+7.1Перейди в каталог з файлом зони
+
+cd /etc/bind
+
+Перевір:
+
+ls db.example.local
+
+ 
+
+7.2 Скопіюй ключі в /etc/bind
+
+sudo cp /etc/bind/keys/Kexample.local.* /etc/bind/
+
+ 
+
+Перевір:
+
+ls Kexample.local.*
+
+ 
+
+7.3 Відкрий файл зони
+
+sudo nano /etc/bind/db.example.local
+
+В КІНЕЦЬ файлу ДОДАЙ $INCLUDE
+
+$INCLUDE Kexample.local.+008+37087.key
+
+$INCLUDE Kexample.local.+008+34906.key
+
+ 
+
+7.4 Збережи файл і перевір
+
+sudo named-checkzone example.local /etc/bind/db.example.local
+
+ 
+
+7.5 ТЕПЕР підписання
+
+sudo dnssec-signzone -A -o example.local db.example.local
+
+Перевір результат
+
+ls db.example.local*
+
+✅ Має з’явитись:
+
+db.example.local
+
+db.example.local.signed
+
+ 
+
+8. Вказати BIND використовувати підписану зону
+
+Відкрий:
+
+sudo nano /etc/bind/named.conf.local
+
+Заміни:
+
+file "/etc/bind/db.example.local";
+
+✅ На:
+
+file "/etc/bind/db.example.local.signed";
+
+ 
+
+9️. Перезапуск після DNSSEC
+
+sudo systemctl restart bind9
+
+ 
+
+10. Перевірка DNSSEC
+
+10.1 Перевірка відповіді DNS
+
+dig @localhost example.local +dnssec
+
+ 
+
+У AUTHORITY SECTION ти бачиш:
+RRSIG SOA
+RRSIG NSEC
+NSEC
+👉 Це 100% доказ, що:
+• зона підписана
+• RRSIG є
+• DNSSEC працює
+ 
+
+10.2 Перевірка конкретного запису
+
+sudo ss -lntup | grep :53
+
+Вибираємо адресу 192.168.ххх.ххх і виконуємо з нею  dig @192.168.ххх.ххх example.local +dnssec
+
+ЩО МИ БАЧИМО (і чому це 100% OK)
+
+🔹 Статус
+
+status: NOERROR
+
+✔ Запит оброблено коректно
+
+🔹 Прапори
+
+flags: qr aa rd ra
+
+• aa → authoritative answer (твій сервер — master)
+• rd/ra → рекурсія дозволена для trusted ACL
+🔹 DNSSEC-докази (ГОЛОВНЕ)
+
+У AUTHORITY SECTION:
+
+RRSIG SOA
+
+RRSIG NSEC
+
+NSEC
+
+👉 Це означає:
+
+• зона підписана
+• підписи перевірні
+• DNSSEC активний і працює
