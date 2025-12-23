@@ -1,0 +1,358 @@
+Встановити Postfix + Dovecot з базовими налаштуваннями безпеки та
+логування, налаштувати POP3S, SMTPS. Продемонструвати роботу
+клієнта Thunderbird з цим сервером.
+
+0) Підготовка системи (hostname, DNS/hosts, час)
+
+0.1. Задай hostname
+
+sudo hostnamectl set-hostname mail.example.local
+
+hostnamectl
+
+У hostnamectl має бути Static hostname: mail.example.local.
+
+ 
+
+0.2. Пропиши локальне ім’я (якщо в тебе немає нормального DNS)
+
+Відкрий /etc/hosts:
+
+sudo nano /etc/hosts
+
+Додай рядок (підстав свій IP):
+
+192.168.1.10   mail.example.local mail
+
+Перевір:
+
+getent hosts mail.example.local
+
+hostname -f
+
+0.3. Онови пакети
+
+sudo apt update
+
+sudo apt -y upgrade
+
+ 
+
+1) Встановлення Postfix + Dovecot + TLS + утиліти
+
+sudo apt -y install postfix dovecot-core dovecot-pop3d openssl ca-certificates mailutils
+
+Під час встановлення Postfix (в меню):
+
+• General type of mail configuration → Internet Site
+• System mail name → example.local (або твій домен)
+Перевір служби:
+• systemctl status postfix --no-pager
+• systemctl status dovecot --no-pager
+ 
+
+2) Базові налаштування безпеки та логування
+
+2.1. Увімкнути UFW і відкрити потрібні порти (SMTPS 465, POP3S 995)
+
+sudo apt -y install ufw
+
+sudo ufw default deny incoming
+
+sudo ufw default allow outgoing
+
+ 
+
+sudo ufw allow OpenSSH
+
+sudo ufw allow 465/tcp
+
+sudo ufw allow 995/tcp
+
+ 
+
+sudo ufw enable
+
+sudo ufw status verbose
+
+Ми не відкриваємо 25/587/110 у цьому завданні, щоб лишити тільки SMTPS і POP3S
+
+ 
+
+2.2. Переконайся, що логування працює
+
+Перевір журнал:
+
+sudo journalctl -u postfix -n 50 --no-pager
+
+sudo journalctl -u dovecot -n 50 --no-pager
+
+ 
+
+3) TLS сертифікат (самопідписаний) для SMTPS/POP3S
+
+Створимо сертифікат на 365 днів:
+
+sudo openssl req -new -x509 -nodes -days 365 \
+
+ -newkey rsa:2048 \
+
+ -keyout /etc/ssl/private/mail.key \
+
+ -out /etc/ssl/certs/mail.crt
+
+На питання OpenSSL:
+
+• Common Name (CN) → mail.example.local (важливо!)
+Права доступу:
+• sudo chmod 600 /etc/ssl/private/mail.key
+• sudo chown root:root /etc/ssl/private/mail.key
+ 
+
+4) Налаштування Dovecot (POP3S + Maildir + SSL)
+
+4.1. Увімкнути Maildir (щоб листи були в домашній папці користувача)
+
+Відкрий:
+
+sudo nano /etc/dovecot/conf.d/10-mail.conf
+
+Знайди mail_location і зроби так:
+
+mail_location = maildir:~/Maildir
+
+4.2. Увімкнути тільки POP3S (і вимкнути plaintext POP3)
+
+Відкрий:
+
+sudo nano /etc/dovecot/conf.d/10-master.conf
+
+ 
+
+inet_listener pop3 {
+
+ port = 0
+
+}
+
+для SSL:
+
+inet_listener pop3s {
+
+ port = 995
+
+ ssl = yes
+
+}
+
+ 
+
+4.3. SSL налаштування Dovecot
+
+Відкрий:
+
+sudo nano /etc/dovecot/conf.d/10-ssl.conf
+
+Постав
+
+ssl = required
+
+ssl_cert = </etc/ssl/certs/mail.crt
+
+ssl_key = </etc/ssl/private/mail.key
+
+ 
+
+4.4. Аутентифікація (дозволити normal password)
+
+Відкрий:
+
+sudo nano /etc/dovecot/conf.d/10-auth.conf
+
+Перевір/встанови:
+
+disable_plaintext_auth = yes
+
+auth_mechanisms = plain login
+
+(Тут plain login потрібні, бо Thunderbird їх використовує всередині TLS, а disable_plaintext_auth = yes забороняє без TLS.)
+
+Перезапуск:
+
+sudo systemctl restart dovecot
+
+sudo systemctl status dovecot --no-pager
+
+ 
+
+5) Налаштування Postfix (SMTPS на 465 + TLS + SMTP AUTH)
+
+5.1. Базові TLS + безпека + домен
+
+Виконай командою:
+
+sudo postconf -e "myhostname = mail.example.local"
+
+sudo postconf -e "mydomain = example.local"
+
+sudo postconf -e "myorigin = \$mydomain"
+
+sudo postconf -e "mydestination = \$myhostname, localhost.\$mydomain, localhost, \$mydomain"
+
+sudo postconf -e "inet_interfaces = all"
+
+sudo postconf -e "inet_protocols = ipv4"
+
+sudo postconf -e "home_mailbox = Maildir/"
+
+ 
+
+sudo postconf -e "smtpd_tls_cert_file = /etc/ssl/certs/mail.crt"
+
+sudo postconf -e "smtpd_tls_key_file = /etc/ssl/private/mail.key"
+
+sudo postconf -e "smtpd_tls_security_level = may"
+
+sudo postconf -e "smtpd_tls_auth_only = yes"
+
+sudo postconf -e "smtpd_tls_loglevel = 1"
+
+sudo postconf -e "smtpd_tls_received_header = yes"
+
+ 
+
+sudo postconf -e "smtpd_helo_required = yes"
+
+sudo postconf -e "smtpd_delay_reject = yes"
+
+sudo postconf -e "disable_vrfy_command = yes"
+
+ 
+
+sudo postconf -e "smtpd_recipient_restrictions = permit_sasl_authenticated, reject_unauth_destination"
+
+ 
+
+ 
+
+5.2. Підключити SMTP AUTH через Dovecot (SASL)
+
+sudo postconf -e "smtpd_sasl_type = dovecot"
+
+sudo postconf -e "smtpd_sasl_path = private/auth"
+
+sudo postconf -e "smtpd_sasl_auth_enable = yes"
+
+sudo postconf -e "broken_sasl_auth_clients = yes"
+
+5.3. Увімкнути SMTPS (порт 465) і вимкнути plaintext smtp (25) та submission (587) — якщо треба “тільки SMTPS”
+
+Відкрий:
+
+sudo nano /etc/postfix/master.cf
+
+Знайди рядок (зазвичай закоментований) для smtps і зроби так (розкоментуй або додай в кінець):
+
+smtps     inet  n       -       y       -       -       smtpd
+
+ -o syslog_name=postfix/smtps
+
+ -o smtpd_tls_wrappermode=yes
+
+ -o smtpd_sasl_auth_enable=yes
+
+ -o smtpd_recipient_restrictions=permit_sasl_authenticated,reject
+
+ -o milter_macro_daemon_name=ORIGINATING
+
+Тепер вимкнемо 25 і 587, щоб не світилися (не обов’язково, але під твою вимогу “SMTPS/POP3S” — логічно):
+
+У тому ж master.cf знайди:
+
+закоментуй рядок smtp inet ... поставивши # на початку.
+
+Перезапуск:
+
+sudo systemctl restart postfix
+
+sudo systemctl status postfix --no-pager
+
+6) Створення поштових користувачів (Linux-акаунти)
+
+Створимо двох:
+
+sudo adduser user1
+
+sudo adduser user2
+
+ 
+
+ 
+
+ 
+
+7) Перевірка, що порти слухаються і TLS працює
+
+7.1. Порти
+
+sudo ss -tulpn | egrep ':465|:995'
+
+Маєш побачити LISTEN на 465 (postfix/master або smtpd) і 995 (dovecot).
+
+7.2. Перевір TLS
+
+SMTPS 465:
+
+openssl s_client -connect mail.example.local:465 -crlf -quiet
+
+POP3S 995:
+
+openssl s_client -connect mail.example.local:995 -crlf -quiet
+
+Якщо підключилося — побачиш інформацію про сертифікат. Вийти: CTRL+C.
+
+ 
+
+8) Тест відправки/доставки на сервері (без Thunderbird)
+
+8.1. Відправ лист локально
+
+echo "Test message" | mail -s "Hello" user1
+
+Перевір, що з’явився Maildir:
+
+sudo -u user1 ls -la /home/user1/Maildir
+
+sudo -u user1 find /home/user1/Maildir -type f | head
+
+ 
+
+9) Налаштування Thunderbird (клієнт) під POP3S + SMTPS
+
+9.1. Що вводити в Thunderbird
+
+Email (логін): user1@example.local (або просто user1 — залежить як ти хочеш, але найчастіше краще повна адреса)
+Password: пароль Linux користувача user1.
+
+Коли Thunderbird запропонує автоконфіг — натисни Manual config і постав:
+
+Вхідна пошта (Incoming)
+
+• Protocol: POP3
+• Server: mail.example.local
+• Port: 995
+• SSL: SSL/TLS
+• Authentication: Normal password
+• Username: user1
+Вихідна пошта (Outgoing SMTP)
+
+• Server: mail.example.local
+• Port: 465
+• SSL: SSL/TLS
+• Authentication: Normal password
+• Username: user1
+Thunderbird попередить про self-signed certificate → Accept Risk / Add Exception (це нормально для лабораторної).
+
+Thunderbird попередить про self-signed certificate → Accept Risk / Add Exception (це нормально для лабораторної).
+
+Надсилаємо лист на user2@mail.example.local
