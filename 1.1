@@ -1,0 +1,92 @@
+📄 /etc/pam.d/common-password
+(складність + історія паролів)
+# PAM password configuration
+password requisite pam_pwquality.so retry=3 minlen=8 dcredit=-1
+ucredit=-1
+password [success=1 default=ignore] pam_unix.so obscure use_authtok
+sha512 remember=3
+password required pam_deny.so
+📄 /etc/pam.d/common-auth
+⚠️ БЕЗ pam_faillock — інакше su зламається
+# PAM authentication configuration
+auth required pam_env.so
+auth sufficient pam_unix.so nullok_secure
+auth requisite pam_deny.so
+auth required pam_permit.so
+📄 /etc/pam.d/common-account
+(pam_time для student)
+# PAM account configuration
+account required pam_time.so
+account required pam_unix.so
+📄 /etc/pam.d/common-session
+(pam_motd)
+# PAM session configuration
+session required pam_unix.so
+session optional pam_motd.so motd=/run/motd.dynamic
+session optional pam_motd.so noupdate
+📄 /etc/pam.d/login
+👉 Блокування ТІЛЬКИ user666 (локальний вхід)
+# PAM configuration for login
+auth [success=2 default=ignore] pam_succeed_if.so user = user666
+auth required pam_faillock.so preauth silent audit deny=3
+unlock_time=300
+auth [default=die] pam_faillock.so authfail deny=3 unlock_time=300
+auth sufficient pam_faillock.so authsucc
+@include common-auth
+@include common-account
+@include common-session
+@include common-password
+📄 /etc/pam.d/sshd
+👉 ТЕ САМЕ, але для SSH
+# PAM configuration for sshd
+auth [success=2 default=ignore] pam_succeed_if.so user = user666
+auth required pam_faillock.so preauth silent audit deny=3
+unlock_time=300
+auth [default=die] pam_faillock.so authfail deny=3 unlock_time=300
+auth sufficient pam_faillock.so authsucc
+@include common-auth
+@include common-account
+@include common-session
+@include common-password
+📌 Тепер:
+● ssh user666@host → блокується після 3 помилок
+● ssh student@host → НЕ блокується
+📄 /etc/security/time.conf
+(обмеження часу для student)
+# service;tty;user;time
+*;*;student;Al0800-1800
+📄 /etc/pam.d/login (pam_securetty
+для root — як у вимогах)
+Переконайся, що рядок є і НЕ закоментований:
+auth [success=ok ignore=ignore user_unknown=ignore default=bad]
+pam_securetty.so
+(це стандарт, зазвичай уже є)
+👤 Користувачі
+useradd -m user666
+passwd user666
+usermod -aG sudo user666
+useradd -m student
+passwd student
+🔑 SSH (ОБОВʼЯЗКОВО)
+В /etc/ssh/sshd_config перевір:
+UsePAM yes
+Потім:
+systemctl restart ssh
+# або
+service ssh restart
+✅ ПЕРЕВІРКА (ДЛЯ ЗАХИСТУ)
+faillock --reset
+❌ user666:
+login user666
+ssh user666@localhost
+faillock --user user666
+✅ є записи
+✅ student:
+login student
+ssh student@localhost
+faillock --user student
+✅ порожньо
+✅ su:
+su student
+su user666
+✅ працює
